@@ -415,7 +415,7 @@ class TestUmiBarcodeDemux(unittest.TestCase):
       assert demultiplexed_record[0].tags['aI'] == 41
 
         
-    def test_issue_290_thruplex_header(self, tmp_path):
+    def test_issue_290_thruplex_header(self):
       # The same code as test_issue_290_header_provided_index, but then with a "normal" illumina_merged_ThruPlex48S_RP index
       barcode_folder = str(importlib.resources.files('singlecellmultiomics').joinpath('modularDemultiplexer/barcodes/'))
       barcode_parser = BarcodeParser(barcode_folder,lazyLoad='*')
