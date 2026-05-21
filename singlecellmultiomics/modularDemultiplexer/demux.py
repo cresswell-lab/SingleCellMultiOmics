@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import importlib.resources as resources
-import logging
-from singlecellmultiomics.modularDemultiplexer.baseDemultiplexMethods import NonMultiplexable
 from colorama import init
 from singlecellmultiomics.modularDemultiplexer.demultiplexingStrategyLoader import DemultiplexingStrategyLoader
 import singlecellmultiomics.libraryDetection.sequencingLibraryListing as sequencingLibraryListing
@@ -147,8 +145,6 @@ if __name__ == '__main__':
         default=1)
 
     fragArgs = argparser.add_argument_group('Fragment configuration', '')
-    #fragArgs.add_argument('--rc1', help="First mate is reverse complemented", action='store_true')
-    #fragArgs.add_argument('--rc2', help="Second mate is reverse complemented", action='store_true')
     fragArgs.add_argument(
         '--se',
         help="Allow single end reads",

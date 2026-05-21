@@ -5,13 +5,10 @@ import singlecellmultiomics.fastqProcessing.fastqIterator as fastqIterator
 import string
 from singlecellmultiomics.utils.sequtils import hamming_distance
 from singlecellmultiomics.tags import *
+from singlecellmultiomics.modularDemultiplexer.headerCodecs import HeaderCodecRegistry
+from singlecellmultiomics.tags import TagDefinitions, NonFastqWritableTags
 
 complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
-
-
-TagDefinitions = {tag.tag: tag for tag in tags}
-
-# Obtain metadata from read
 
 
 def metaFromRead(read, tag):
@@ -60,18 +57,21 @@ illuminaHeaderSplitRegex = re.compile(':| ', re.UNICODE)
 
 
 class TaggedRecord():
+    
     def __init__(
             self,
-            tagDefinitions,
+            tagDefinitions=None,
             rawRecord=False,
             library=None,
             reason=None,
+            parse_func=None,
             **kwargs):
-        self.tags = {}  # 2 character Key -> value
-        self.tagDefinitions = tagDefinitions
+        self.tags = {}  # 2 character key -> value
+        self.tagDefinitions = tagDefinitions if tagDefinitions is not None else TagDefinitions
+
         if rawRecord is not False:
             try:
-                self.fromRawFastq(rawRecord, **kwargs)
+                self.fromRawFastq(rawRecord, parse_func=parse_func, **kwargs)
             except NonMultiplexable:
                 raise
         if library is not None and not 'LY' in self.tags:
@@ -136,8 +136,8 @@ class TaggedRecord():
                 raise ValueError()
             baseQualities = self.qualities
 
-        header = ";".join([f"{attribute}:{value}" for attribute, value in self.tags.items(
-        ) if not self.tagDefinitions[attribute].doNotWrite])
+        header = ";".join( [f"{k}:{self.tags[k]}" for k in self.tags if k not in NonFastqWritableTags])
+        
         if len(header) > 255:  # the header length is stored as uint_8 and includes a null character. The maximum length is thus 255
             raise ValueError(
                 f"The length of the demultiplexed header is longer than 255 characters. Try to keep your library name below 60 characters. Reduce the length of the header. For example by using -merge _ which will not put the flow cell in the sample name. The header looks like this: {header}")
@@ -154,148 +154,32 @@ class TaggedRecord():
                 return self.tags['oh']
             raise e
 
-
-    def parse_3dec_header(self,fastqRecord, indexFileParser,  indexFileAlias):
-
-        instrument = 'UNK'
-        runNumber = 'UNK'
-        flowCellId = 'UNK'
-        indexSequence = 'N'
-        lane = 'UNK'
-        tile = 'UNK'
-        clusterXpos = '-1'
-        clusterYpos = '-1'
-        readPairNumber = '0'
-        isFiltered = '0'
-        controlNumber = '0'
-
-        # 3-DEC: @Cluster_s_1_1101_2
-        if fastqRecord.header.count('_') == 4:
-            _cluster_, _s_, lane, tile, readPairNumber = fastqRecord.header.split(
-                '_')
-            # check  that this s thingy is at the right place
-            assert(_s_ == 's')
-        else:
-            raise
-
-        self.tags.update({
-            'Is': instrument,
-            'RN': runNumber,
-            'Fc': flowCellId,
-            'La': lane,
-            'Ti': tile,
-            'CX': clusterXpos,
-            'CY': clusterYpos,
-            'RP': readPairNumber,
-            'Fi': isFiltered,
-            'CN': controlNumber
-        })
-
-    def parse_other_header(self,fastqRecord, indexFileParser,  indexFileAlias):
-        self.tags.update({
-            'oh':fastqRecord.header[1:].replace(';','').split()[0] # original header
-        })
-
-
-    def _parse_illumina_header(self,header, indexFileParser = None,  indexFileAlias = None):
-
-        try:
-            instrument, runNumber, flowCellId, lane, tile, clusterXpos, clusterYpos, readPairNumber, isFiltered, controlNumber, indexSequence  = header.replace(' ',':').split(':')
-        except ValueError: # Triggered when the header does not have 11 parts
-
-            try:
-                instrument, runNumber, flowCellId, lane, tile, clusterXpos, clusterYpos, readPairNumber, isFiltered, controlNumber = illuminaHeaderSplitRegex.split(
-                    header.replace('::', ''))
-                indexSequence = "N"
-            except ValueError:
-                try:
-                    instrument, runNumber, flowCellId, lane, tile, clusterXpos, clusterYpos = header.split(':')
-                    indexSequence = "N"
-                    readPairNumber = 1
-                    isFiltered = 0
-                    controlNumber = 0
-                except ValueError:
-                    raise
-
-        self.tags.update({
-            'Is': instrument,
-            'RN': runNumber,
-            'Fc': flowCellId,
-            'La': lane,
-            'Ti': tile,
-            'CX': clusterXpos,
-            'CY': clusterYpos,
-            'RP': readPairNumber,
-            'Fi': isFiltered,
-            'CN': controlNumber
-        })
-
-        if indexFileParser is not None and indexFileAlias is not None:
-            # Check if the index is an integer:
-            try:
-                indexInteger = int(indexSequence)
-                indexIdentifier, correctedIndex, hammingDistance = indexSequence, indexSequence, 0
-            except ValueError:
-                indexIdentifier, correctedIndex, hammingDistance = indexFileParser.getIndexCorrectedBarcodeAndHammingDistance(
-                    alias=indexFileAlias, barcode=indexSequence)
-
-            self.tags['aa']  = indexSequence
-            if correctedIndex is not None:
-                #
-                #self.addTagByTag('aA',correctedIndex, isPhred=False)
-                #self.addTagByTag('aI',indexIdentifier, isPhred=False)
-                self.tags.update({'aA': correctedIndex, 'aI': indexIdentifier})
-            else:
-                raise NonMultiplexable(
-                    'Could not obtain index for %s  %s %s' %
-                    (indexSequence, correctedIndex, indexIdentifier))
-                # self.addTagByTag('aA',"None")
-                # self.addTagByTag('aI',-1)
-                # self.addTagByTag('ah',hammingDistance)
-
-        else:
-            #self.addTagByTag('aA',indexSequence, isPhred=False)
-            self.tags['aa'] = indexSequence
-
-
-    def parse_illumina_header(self,fastqRecord, indexFileParser = None,  indexFileAlias = None):
-        return self._parse_illumina_header(fastqRecord.header[1:], indexFileParser=indexFileParser, indexFileAlias=indexFileAlias )
-
-
-    def parse_scmo_header(self, fastqRecord, indexFileParser,  indexFileAlias):
-        self.tags.update( dict( kv.split(':') for kv in fastqRecord.header.strip()[1:].split(';') ) )
-
     def fromRawFastq(
             self,
             fastqRecord,
             indexFileParser=None,
-            indexFileAlias=None):
-
-        try:
-            self.parse_illumina_header(fastqRecord, indexFileParser,  indexFileAlias)
-        except ValueError:
-            if fastqRecord.header.startswith('@Is') or (';' in fastqRecord.header and ':' in fastqRecord.header): # Key value pairs of key:value separated by ;
-                self.parse_scmo_header(fastqRecord, indexFileParser,  indexFileAlias)
-            else:
-                if fastqRecord.header.startswith('@Cluster'):
-                    self.parse_3dec_header(fastqRecord, indexFileParser,  indexFileAlias)
-                else:
-                    self.parse_other_header(fastqRecord, indexFileParser,  indexFileAlias)
-
-
-            # NS500413:32:H14TKBGXX:2:11101:16448:1664 1:N:0::
-        """ This is the nice and safe way:
-        self.addTagByTag( 'Is',instrument, isPhred=False)
-        self.addTagByTag('RN',runNumber, isPhred=False)
-        self.addTagByTag('Fc',flowCellId, isPhred=False)
-        self.addTagByTag('La',lane, isPhred=False)
-        self.addTagByTag('Ti',tile, isPhred=False)
-        self.addTagByTag('CX',clusterXpos, isPhred=False)
-        self.addTagByTag('CY',clusterYpos, isPhred=False)
-        self.addTagByTag('RP',readPairNumber, isPhred=False)
-        self.addTagByTag('Fi',isFiltered, isPhred=False)
-        self.addTagByTag('CN',controlNumber, isPhred=False)
+            indexFileAlias=None,
+            parse_func=None):
+        """Parse FASTQ record using header codec.
+        
+        Args:
+            fastqRecord: FastqRecord object to parse
+            indexFileParser: Parser for barcode index detection (BarcodeFileParser)
+            indexFileAlias: Alias for index file, see modularDemultiplexer/indices (exclude .bc)
+            parse_func: Header parsing function (Auto-detects the header format and function if None)
         """
+        # Autodetect a header parse function when this is not set
+        if parse_func is None:
+            registry = HeaderCodecRegistry()
+            registry.detect(fastqRecord.header)
+            parse_func = registry._parse_func
+        
+        self.tags.update(parse_func(
+            fastqRecord.header,
+            indexFileParser,
+            indexFileAlias
+        ))
+
 
     def tagPysamRead(self, read):
 
@@ -388,22 +272,38 @@ class TaggedRecord():
             self.addTagByTag(key, value, decodePhred=True)
 
     def fromTaggedBamRecord(self, pysamRecord):
+        """Parse header from tagged BAM record (already processed, usually in SCMO key-value format)."""
         try:
-            
             for keyValue in pysamRecord.query_name.strip().split(';'):
-                key, value = keyValue.split(':',1)
-                self.addTagByTag(key, value, isPhred=False, make_safe=False)
+                if ':' in keyValue:
+                    key, value = keyValue.split(':', 1)
+                    value = value.strip()
+                    if value.startswith('@'): # Ugly slow backwards compatibility to malformed headers @TODO: remove this at some point
+                        value = value[1:]
+                    if key.startswith('@'): # Ugly slow backwards compatibility to malformed headers @TODO: remove this at some point
+                        key = value[1:]
+                    self.addTagByTag(key, value, isPhred=False, make_safe=False) # Slow @TODO
         except ValueError as e:
             # Try to parse "Single Cell Discoveries" header
-            # These have the following header:
-            #NBXXXXXX:530:HXXXXXX:2:2:17:6;SS:GTCATTAG;CB:GTCATTAG;QT:eeeeeeee;RX:CTGAAC;RQ:aaaaae;SM:SAMPLE_NAME
-            illumina_header, attributes = pysamRecord.query_name.strip().split(';',1)
-
-            self._parse_illumina_header(illumina_header, indexFileParser=None, indexFileAlias=None )
-
-            for keyValue in attributes.split(';'):
-                key, value = keyValue.split(':')
-                self.addTagByTag(key, value, isPhred=False, make_safe=False)
+            # Format: illumina_header;key:value;key:value...
+            query_name = pysamRecord.query_name.strip()
+            if ';' in query_name:
+                illumina_header, attributes = query_name.split(';', 1)
+                
+                # Parse illumina part using codec @TODO: this is obviously too slow. Need to pass a appropriate codec
+                registry = HeaderCodecRegistry()
+                if registry.detect('@' + illumina_header): 
+                    tags = registry.parse('@' + illumina_header)
+                    self.tags.update(tags)
+                
+                # Parse attributes
+                for keyValue in attributes.split(';'):
+                    if ':' in keyValue:
+                        key, value = keyValue.split(':', 1)
+                        value = value.strip()
+                        if value.startswith('@'): # Backwards compatibility with incorrectly encoded fastq headers (with @Is)
+                            value = value[1:]
+                        self.addTagByTag(key, value, isPhred=False, make_safe=False)
 
 
 def reverseComplement(seq):
@@ -492,6 +392,7 @@ class IlluminaBaseDemultiplexer(DemultiplexingStrategy):
             inherited=False,
             library=None,
             reason=None,
+            parse_func=None,
             **kwargs):
         global TagDefinitions
 
@@ -504,7 +405,8 @@ class IlluminaBaseDemultiplexer(DemultiplexingStrategy):
                         indexFileParser=self.indexFileParser,
                         indexFileAlias=self.illuminaIndicesAlias,
                         library=library,
-                        reason=reason) for record in records]
+                        reason=reason,
+                        parse_func=parse_func) for record in records]
             else:
                 return [
                     TaggedRecord(
@@ -513,7 +415,8 @@ class IlluminaBaseDemultiplexer(DemultiplexingStrategy):
                         indexFileParser=self.indexFileParser,
                         indexFileAlias=self.illuminaIndicesAlias,
                         library=library,
-                        reason=reason).asFastq(
+                        reason=reason,
+                        parse_func=parse_func).asFastq(
                         record.sequence,
                         record.plus,
                         record.qual) for record in records]

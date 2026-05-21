@@ -2,18 +2,16 @@
 # -*- coding: utf-8 -*-
 import os
 import collections
-import glob
 import sys
 from colorama import Fore
-from colorama import Back
 from colorama import Style
-import importlib
-import inspect
 import traceback
 import singlecellmultiomics.modularDemultiplexer.demultiplexModules as dm
 import singlecellmultiomics.fastqProcessing.fastqIterator as fastqIterator
 from singlecellmultiomics.modularDemultiplexer.baseDemultiplexMethods import NonMultiplexable, IlluminaBaseDemultiplexer
-import logging
+from singlecellmultiomics.modularDemultiplexer.headerCodecs import HeaderCodecRegistry
+
+
 
 
 class DemultiplexingStrategyLoader:
@@ -34,6 +32,7 @@ class DemultiplexingStrategyLoader:
             '/')
         self.barcodeParser = barcodeParser
         self.indexParser = indexParser
+        self.indexFileAlias = indexFileAlias
         self.only_detect_methods = only_detect_methods
         moduleSearchPath = moduleSearchPath
 
@@ -183,19 +182,39 @@ class DemultiplexingStrategyLoader:
         useStrategies = strategies if strategies is not None else self.getAutodetectStrategies()
         strategyYields = collections.Counter()
         processedReadPairs = 0
-        baseDemux = IlluminaBaseDemultiplexer(
-            indexFileParser=self.indexParser,
-            barcodeParser=self.barcodeParser,
-            probe=probe)
+        baseDemux_kwargs = {
+            'indexFileParser': self.indexParser,
+            'barcodeParser': self.barcodeParser,
+            'probe': probe
+        }
+        # Pass indexFileAlias if explicitly set, otherwise let IlluminaBaseDemultiplexer use its default
+        if self.indexFileAlias is not None:
+            baseDemux_kwargs['indexFileAlias'] = self.indexFileAlias
+        baseDemux = IlluminaBaseDemultiplexer(**baseDemux_kwargs)
+        
+        # Initialize header codec registry for format detection
+        header_registry = HeaderCodecRegistry()
+        first_read_seen = False
+        parse_func = None
 
         for p, reads in enumerate(
                 fastqIterator.FastqIterator(*fastqfiles)):
             processedReadPairs = p+1
+            
+            # Detect header format from first read
+            if not first_read_seen and reads:
+                sample_header = reads[0].header
+                detected_codec = header_registry.detect(sample_header)
+                parse_func = header_registry._parse_func  # Extract parse function for speed
+                first_read_seen = True
+                if log_handle is not None:
+                    log_handle.write(f"Detected header format: {header_registry.codec_name}\n")
 
             for strategy in useStrategies:
                 try:
                     recodedRecords = strategy.demultiplex(
-                        reads, library=library, probe=probe)
+                        reads, library=library, probe=probe, 
+                        parse_func=parse_func)
 
                     if targetFile is not None:
                         targetFile.write(recodedRecords)
@@ -206,7 +225,8 @@ class DemultiplexingStrategyLoader:
 
                         try:
                             to_write = baseDemux.demultiplex(
-                                reads, library=library, reason=reason)
+                                reads, library=library, reason=reason,
+                                parse_func=parse_func)
                             rejectHandle.write(to_write)
 
                         except NonMultiplexable as e:

@@ -7,10 +7,11 @@ from singlecellmultiomics.modularDemultiplexer.demultiplexModules.CELSeq2 import
 from singlecellmultiomics.modularDemultiplexer.demultiplexModules.scCHIC import SCCHIC_384w_c8_u3_cs2
 from singlecellmultiomics.modularDemultiplexer.demultiplexModules.DamID import DamID2andT_SCA,DamID2_SCA
 from singlecellmultiomics.modularDemultiplexer.baseDemultiplexMethods import TaggedRecord, UmiBarcodeDemuxMethod, TagDefinitions
+from singlecellmultiomics.modularDemultiplexer.demultiplexingStrategyLoader import DemultiplexingStrategyLoader
 from singlecellmultiomics.utils import reverse_complement
 import importlib.resources
-
-
+import tempfile
+import os
 class Dummy_pysam_read:
     def __init__(self, header:str):
         self.query_name = header
@@ -173,12 +174,14 @@ class TestUmiBarcodeDemux(unittest.TestCase):
     def test_decode_tagged(self):
         tr = TaggedRecord(TagDefinitions)
 
-        tr.fromTaggedBamRecord(Dummy_pysam_read("Is:LH00371;RN:377;Fc:23JCYHLT3;La:1;Ti:2146;CX:50248;CY:15716;Fi:N;CN:0;aa:GACGAC;oh:LH00371:377:23JCYHLT3:1:2146:50248:15716;LY:JvB-203-RPE1-scFP-EdU-seq-super-pl17;RX:AGC;RQ:jyy;bi:126;bc:GCGCTACG;MX:scCHIC384C8U3;BC:GCGCTACG;rS:CCTAGC;lh:TA;lq:OO"))
+        tr.fromTaggedBamRecord(Dummy_pysam_read("Is:@LH00371;RN:377;Fc:23JCYHLT3;La:1;Ti:2146;CX:50248;CY:15716;Fi:N;CN:0;aa:GACGAC;oh:LH00371:377:23JCYHLT3:1:2146:50248:15716;LY:JvB-203-RPE1-scFP-EdU-seq-super-pl17;RX:AGC;RQ:jyy;bi:126;bc:GCGCTACG;MX:scCHIC384C8U3;BC:GCGCTACG;rS:CCTAGC;lh:TA;lq:OO"))
         assert tr.tags['RN'] == '377'
         assert tr.tags['Is'] == 'LH00371'
         assert tr.tags['RX'] == 'AGC'
         assert tr.tags['oh'] == 'LH00371:377:23JCYHLT3:1:2146:50248:15716'
 
+        
+         
 
     def test_DAMID(self):
 
@@ -234,6 +237,7 @@ class TestUmiBarcodeDemux(unittest.TestCase):
         barcode_folder = str(importlib.resources.files('singlecellmultiomics').joinpath('modularDemultiplexer/barcodes/'))
         
         barcode_parser = BarcodeParser(barcode_folder,lazyLoad='*')
+
 
         r1 = FastqRecord(
           '@Cluster_s_1_1101_1000',
@@ -364,15 +368,177 @@ class TestUmiBarcodeDemux(unittest.TestCase):
           barcodeFileParser=barcode_parser,
           barcodeFileAlias='maya_384NLA',
           indexFileParser=None,
-          indexFileAlias='illumina_merged_ThruPlex48S_RP',
+          indexFileAlias=None,
           random_primer_read=None,
           random_primer_length=6)
 
       demultiplexed_record = demux.demultiplex([r1,r2])
       assert 'oh' not in demultiplexed_record[0].tags
 
+    
+    def test_issue_290_header_provided_index(self):
+
+      barcode_folder = str(importlib.resources.files('singlecellmultiomics').joinpath('modularDemultiplexer/barcodes/'))
+      barcode_parser = BarcodeParser(barcode_folder,lazyLoad='*')
+
+      index_folder = str(importlib.resources.files('singlecellmultiomics').joinpath('modularDemultiplexer/indices/'))
+      index_parser = BarcodeParser(index_folder, lazyLoad='*', hammingDistanceExpansion=2)
+      r1 = FastqRecord(
+        '@LH00371:377:23JCYHLT3:1:1101:36621:1048 1:N:0:GACGAC',
+        'CNGAAGGCTACTGGAATTCTCGGGTGCCAAGGAACTCCAGTCACGACGACATCTGGTGGGGGGTGTTTTTGTTTGAAAAAAGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG',
+        '+',
+        'I#IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII9IIII9III9I9I99II**III9I9I9IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'
+      )
+      r2 = FastqRecord(
+        '@LH00371:377:23JCYHLT3:1:1101:36621:1048 1:N:0:GACGAC',
+        'ANACGGCTAGGCCCTGGAATTCTCGGGTGCCAAGGAACTCCAGTCACGACGACATCTAGGGGGGGGGGTTGTGGTTTGAAAAAGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG',
+        '+',
+        'I#IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII9I99I9999III9**9IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'
+      )
+      # Note that index GACGAC matches index number 41 in the index file illumina_RP_indices.bc
+      demux = UmiBarcodeDemuxMethod(umiRead=0,
+          umiStart=0,
+          umiLength=3,
+          barcodeRead=0,
+          barcodeStart=3,
+          barcodeLength=8,
+          barcodeFileParser=barcode_parser,
+          barcodeFileAlias='maya_384NLA',
+          indexFileParser=index_parser,
+          indexFileAlias='illumina_RP_indices',
+          random_primer_read=None,
+          random_primer_length=6)
+
+      demultiplexed_record = demux.demultiplex([r1,r2])
+      assert 'oh' not in demultiplexed_record[0].tags
+      assert demultiplexed_record[0].tags['aa'] == 'GACGAC'
+      assert demultiplexed_record[0].tags['aI'] == 41
+
+        
+    def test_issue_290_thruplex_header(self, tmp_path):
+      # The same code as test_issue_290_header_provided_index, but then with a "normal" illumina_merged_ThruPlex48S_RP index
+      barcode_folder = str(importlib.resources.files('singlecellmultiomics').joinpath('modularDemultiplexer/barcodes/'))
+      barcode_parser = BarcodeParser(barcode_folder,lazyLoad='*')
+
+      index_folder = str(importlib.resources.files('singlecellmultiomics').joinpath('modularDemultiplexer/indices/'))
+      index_parser = BarcodeParser(index_folder, lazyLoad='*', hammingDistanceExpansion=2)
+      r1 = FastqRecord(
+        '@NB500901:415:HNVGWBGXK:4:11401:9263:1019 1:N:0:AGTTCC',
+        'CNGAAGGCTACTGGAATTCTCGGGTGCCAAGGAACTCCAGTCACGACGACATCTGGTGGGGGGTGTTTTTGTTTGAAAAAAGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG',
+        '+',
+        'I#IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII9IIII9III9I9I99II**III9I9I9IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'
+      )
+      r2 = FastqRecord(
+        '@NB500901:415:HNVGWBGXK:4:11401:9263:1019 1:N:0:AGTTCC',
+        'ANACGGCTAGGCCCTGGAATTCTCGGGTGCCAAGGAACTCCAGTCACGACGACATCTAGGGGGGGGGGTTGTGGTTTGAAAAAGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG',
+        '+',
+        'I#IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII9I99I9999III9**9IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'
+      )
+      demux = UmiBarcodeDemuxMethod(umiRead=0,
+          umiStart=0,
+          umiLength=3,
+          barcodeRead=0,
+          barcodeStart=3,
+          barcodeLength=8,
+          barcodeFileParser=barcode_parser,
+          barcodeFileAlias='maya_384NLA',
+          indexFileParser=index_parser,
+          indexFileAlias='illumina_merged_ThruPlex48S_RP',
+          random_primer_read=None,
+          random_primer_length=6)
+
+      demultiplexed_record = demux.demultiplex([r1,r2])
+      assert 'oh' not in demultiplexed_record[0].tags
+      assert demultiplexed_record[0].tags['aa'] == 'AGTTCC'
+      assert demultiplexed_record[0].tags['aI'] == 14
+
+
 
     
+
+    def test_passing_indexFileAlias_to_baseDemux(self):
+        """Test that indexFileAlias is correctly passed to baseDemux when handling rejected reads.
+        
+        This reproduces a bug where the DemultiplexingStrategyLoader creates baseDemux
+        without passing the indexFileAlias, causing it to use the default instead of
+        the user-specified one. When a read fails demultiplexing and gets written to
+        the reject handle, index lookup fails if the index exists only in the specified
+        file but not in the default.
+        """
+        
+        barcode_folder = str(importlib.resources.files('singlecellmultiomics').joinpath('modularDemultiplexer/barcodes/'))
+        barcode_parser = BarcodeParser(barcode_folder, lazyLoad='*')
+        
+        index_folder = str(importlib.resources.files('singlecellmultiomics').joinpath('modularDemultiplexer/indices/'))
+        index_parser = BarcodeParser(index_folder, lazyLoad='*', hammingDistanceExpansion=2)
+        
+        # Create a read with GACGAC index (exists in illumina_RP_indices but NOT in default illumina_merged_ThruPlex48S_RP)
+        # and a barcode that won't match (to trigger NonMultiplexable)
+        r1 = FastqRecord(
+            '@LH00371:377:23JCYHLT3:1:1101:36621:1048 1:N:0:GACGAC',
+            'XXXNOTAREALBARCODEAAGCTACTGGAATTCTCGGGTGCCAAGGAACTCCAGTCACGACGACATCTGGTGGGGGGTGTTTTTGTTTGAAAAAAGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG',
+            '+',
+            'I#IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII9IIII9III9I9*I*99I*I**II*I*9I9I9IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'
+        )
+        r2 = FastqRecord(
+            '@LH00371:377:23JCYHLT3:1:1101:36621:1048 2:N:0:GACGAC',
+            'XXXNOTAREALBARCODEAAGCTAGGCCCTGGAATTCTCGGGTGCCAAGGAACTCCAGTCACGACGACATCTAGGGGGGGGGGTTGTGGTTTGAAAAAGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG',
+            '+',
+            'I#IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII*I**III9I*99I*99**9*9III9**9*IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'
+        )
+        
+        # Create a temporary FASTQ file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.fastq', delete=False) as f:
+            f.write(f"{r1.header}\n{r1.sequence}\n{r1.plus}\n{r1.qual}\n")
+            temp_r1 = f.name
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.fastq', delete=False) as f:
+            f.write(f"{r2.header}\n{r2.sequence}\n{r2.plus}\n{r2.qual}\n")
+            temp_r2 = f.name
+        
+        try:
+            # Create loader with illumina_RP_indices (not the default)
+            loader = DemultiplexingStrategyLoader(
+                barcodeParser=barcode_parser,
+                indexParser=index_parser,
+                indexFileAlias='illumina_RP_indices'  # NOT the default (illumina_merged_ThruPlex48S_RP)
+            )
+            
+            # Create reject handle that can accept list writes (like real file handle)
+            class ListRejectHandle:
+                def __init__(self):
+                    self.content = []
+                def write(self, data):
+                    if isinstance(data, list):
+                        self.content.extend(data)
+                    else:
+                        self.content.append(data)
+                def getvalue(self):
+                    return '\n'.join(self.content)
+            
+            reject_output = ListRejectHandle()
+            
+            # This should not raise ValueError: Could not obtain index for GACGAC
+            # The bug causes baseDemux to use default index instead of illumina_RP_indices
+            processed, yields = loader.demultiplex(
+                [temp_r1, temp_r2],
+                rejectHandle=reject_output
+            )
+            
+            # Verify that reads were rejected (because barcode doesn't match)
+            self.assertEqual(processed, 1)  # One read pair processed
+            
+            # Verify the reject output was written without error
+            # The header is now in tagged format with index info correctly populated
+            reject_content = reject_output.getvalue()
+            # Check that the index GACGAC was correctly resolved (aA and aI tags present)
+            self.assertIn('aa:GACGAC', reject_content)
+            self.assertIn('aA:GACGAC', reject_content)  # Corrected index
+            self.assertIn('aI:41', reject_content)  # Index ID from illumina_RP_indices
+            
+        finally:
+            os.unlink(temp_r1)
+            os.unlink(temp_r2)
+
 
 if __name__ == '__main__':
     unittest.main()
