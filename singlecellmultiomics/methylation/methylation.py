@@ -168,13 +168,13 @@ class MethylationCountMatrix:
         return f'Methylation call matrix containing {len(self.counts)} samples and {len(self.sites)} locations'
 
     def prune(self, min_samples: int = 0, min_variance: float = None):
-        if len(self.sites)==0 or len(self.counts) == 0 or min_samples == 0 and min_variance is None:
+        if len(self.sites) == 0 or len(self.counts) == 0 or (min_samples == 0 and min_variance is None):
             return
 
         for location, row in self.get_bulk_frame(use_multi=False).iterrows():
             if row.n_samples < min_samples:
                 self.delete_location(location)
-            elif min_variance is not None and (np.isnan(row.variance) or row.variance < min_variance):
+            if min_variance is not None and (np.isnan(row.variance) or row.variance < min_variance):
                 self.delete_location(location)
 
     def delete_location(self, location):
