@@ -1684,7 +1684,7 @@ class Molecule():
         self.match_hash = fragment.match_hash
 
         # if we already had a fragment, this fragment is a duplicate:
-        if len(self.fragments) > 1:
+        if len(self.fragments) >= 1:
             fragment.set_duplicate(True)
 
         self.fragments.append(fragment)
