@@ -150,6 +150,12 @@ tags = [
     SamTag('eH', 'ExonHits amount of bases aligned to exon'),
     SamTag('SP', 'IsSpliced'),
 
-
-
 ]
+
+
+# Tag definitions as a dictionary keyed by tag name
+TagDefinitions = {tag.tag: tag for tag in tags}
+
+# Set of unwritable tags (those that should not be written to FASTQ headers)
+NonFastqWritableTags = {k for k, v in TagDefinitions.items() if v.doNotWrite}
+

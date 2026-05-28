@@ -131,13 +131,25 @@ class TestMolecule(unittest.TestCase):
             self.assertTrue( molecule_A.add_fragment(frag_B) )
             self.assertEqual(len(molecule_A),2)
 
-            # Frag C cannot be added:
+            frag_B_read = frag_B.reads[0]
+            self.assertTrue(frag_B_read.is_duplicate)
+        
+            read_J = get_chic_read(test_sam.header, 'read_J', start=101)
+            frag_J = CHICFragment([read_J], umi_hamming_distance=0, assignment_radius=2)
+            molecule_A.add_fragment(frag_J)
+            self.assertEqual(len(molecule_A), 3)
+            
+            # All fragments after the first should be marked as duplicate
+            self.assertTrue(frag_B.reads[0].is_duplicate)
+            self.assertTrue(frag_J.reads[0].is_duplicate)
+
+            # Frag C cannot be added (different location):
             self.assertFalse( molecule_A.add_fragment(frag_C) )
-            self.assertEqual(len(molecule_A),2)
+            self.assertEqual(len(molecule_A), 3)
 
             # Frag D cannot be added:
             self.assertFalse( molecule_A.add_fragment(frag_D) )
-            self.assertEqual(len(molecule_A),2)
+            self.assertEqual(len(molecule_A), 3)
 
             # Test moving of site location by read which is aligned more to left:
             molecule = CHICMolecule([frag_B])

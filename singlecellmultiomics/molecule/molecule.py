@@ -1185,7 +1185,9 @@ class Molecule():
         for start, end in self.get_aligned_blocks():
 
             if prev_end is not None:
-                CIGAR.append(('N', start - prev_end - 1))
+                gap = start - prev_end - 1
+                if gap > 0:
+                    CIGAR.append(('N', gap))
             CIGAR.append(('M', (end - start + 1)))
             prev_end = end
 
@@ -1682,7 +1684,7 @@ class Molecule():
         self.match_hash = fragment.match_hash
 
         # if we already had a fragment, this fragment is a duplicate:
-        if len(self.fragments) > 1:
+        if len(self.fragments) >= 1:
             fragment.set_duplicate(True)
 
         self.fragments.append(fragment)
