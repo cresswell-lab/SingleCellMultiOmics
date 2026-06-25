@@ -1,0 +1,291 @@
+# Load Sequencing Library Lister to detect libraries in the current folder
+import sys
+import contextlib
+import io
+
+import glob
+import collections
+
+# Python must see the parent directory of the package, not the package directory itself.
+SCMO_REPO_ROOT = "/nobackup/lab_cresswell/ahakobyan/scKaryo_processing_area/SingleCellMultiOmics/singlecellmultiomics/libraryDetection"
+if SCMO_REPO_ROOT not in sys.path:
+    sys.path.insert(0, SCMO_REPO_ROOT)
+
+from sequencingLibraryListing import SequencingLibraryLister
+
+################## configuration ##################
+configfile: "config.json"
+
+counting_bin_sizes = config['counting_bin_sizes']
+counting_sliding_window_increments = config['counting_sliding_window_increments']
+
+# Obtain contigs
+
+# contigs = get_contig_list_from_fasta(config['reference_file'])
+
+contigs = config['contigs']
+
+# Detect libraries
+l = SequencingLibraryLister()
+LIBRARIES = l.detect(glob.glob('*.fastq.gz'), merge='_')
+
+fastq_per_lib = collections.defaultdict(list)
+for lib, lane_dict in LIBRARIES.items():
+    for lane, read_dict in lane_dict.items():
+        fastq_per_lib[lib] += read_dict['R1']
+        fastq_per_lib[lib] += read_dict['R2']
+libraries = list(fastq_per_lib.keys())
+
+if len(libraries) == 0:
+    for tagpath in glob.glob('./*/tagged.bam'):
+        libraries.append(tagpath.split('/')[1])
+
+
+################## helper functions ##################
+
+def get_fastq_file_list(wildcards):
+    return sorted(fastq_per_lib[wildcards.library])
+
+def get_target_tagged_bam_list():
+    return [f"processed/{library}/tagged.bam" for library in libraries]
+
+################## rules ##################
+
+rule all:
+    input:
+        get_target_tagged_bam_list(),
+        expand("processed/{library}/count_table_{counting_bin_size}_{counting_sliding_window_increment}.csv",
+            library=libraries,
+            counting_bin_size=counting_bin_sizes,
+            counting_sliding_window_increment=counting_sliding_window_increments),
+        expand("processed/{library}/plots/ReadCount.png", library=libraries)
+
+
+rule SCMO_demux:
+    input:
+        fastqfiles = get_fastq_file_list
+    output:
+        temp("processed/{library}/demultiplexedR1.fastq.gz"),
+        temp("processed/{library}/demultiplexedR2.fastq.gz"),
+        temp("processed/{library}/rejectsR1.fastq.gz"),
+        temp("processed/{library}/rejectsR2.fastq.gz")
+    log:
+        stdout="log/demux/{library}.stdout",
+        stderr="log/demux/{library}.stderr"
+    conda:
+        "SingleCellMultiOmics"
+    resources:
+        runtime="30h",
+        mem_mb=lambda wildcards, attempt: attempt * 4000,
+        slurm_partition="longq",
+        qos="longq"
+    shell:
+        "demux.py -merge _ {input.fastqfiles} -o processed --y > {log.stdout} 2> {log.stderr}"
+
+
+rule Trim:
+    input:
+        r1="processed/{library}/demultiplexedR1.fastq.gz",
+        r2="processed/{library}/demultiplexedR2.fastq.gz"
+    log:
+        stdout="log/trim/{library}.stdout",
+        stderr="log/trim/{library}.stderr"
+    output:
+        r1=temp("processed/{library}/trimmed.R1.fastq.gz"),
+        r2=temp("processed/{library}/trimmed.R2.fastq.gz")
+    conda:
+        "SingleCellMultiOmics"
+    resources:
+        runtime="30h",
+        mem_mb=lambda wildcards, attempt: attempt * 4000,
+        slurm_partition="shortq",
+        qos="shortq"
+    shell:
+        'cutadapt -o {output.r1} -p {output.r2} \
+        {input.r1} {input.r2} \
+        -m 3 -a "IlluminaSmallAdapterConcatBait=GGAACTCCAGTCACNNNNNNATCTCGTATGCCGTCTTCTGCTT" \
+        -a "IlluminaIndexAdapter=GGAATTCTCGGGTGCCAAGGAACTCCAGTCACN{{6}}ATCTCGTATGCCGTCTTCTGCTTG" \
+        -A "IlluminaPairedEndPCRPrimer2.0=AGATCGGAAGAGCGN{{6}}CAGGAATGCCGAGACCGATCTCGTATGCCGTCTTCTGCTTG;min_overlap=5" \
+        -A "universalPrimer=GATCGTCGGACTGTAGAACTCTGAACGTGTAGATCTCGGTGGTCGCCGTATCATT;min_overlap=5" \
+        -a  "IlluminaGEX=TTTTTAATGATACGGCGACCACCGAGATCTACACGTTCAGAGTTCTACAGTCCGACGATC;min_overlap=5" \
+        -a "IlluminaMultiplexingPCRPrimer=GGAACTCCAGTCACN{{6}}TCTCGTATGCCGTCTTCTGCTTG;min_overlap=5" \
+        -A "Aseq=TGGCACCCGAGAATTCCA" -a "Aseq=TGGCACCCGAGAATTCCA"  \
+        -a "illuminaSmallRNAAdapter=TCGTATGCCGTCTTCTGCTTGT" > {log.stdout} 2> {log.stderr}'
+
+
+rule map:
+    input:
+        r1="processed/{library}/trimmed.R1.fastq.gz",
+        r2="processed/{library}/trimmed.R2.fastq.gz"
+    output:
+        bam = temp("processed/{library}/sorted.bam"),
+        bam_index = temp("processed/{library}/sorted.bam.bai")
+    log:
+        stdout="log/map/{library}.stdout",
+        stderr="log/map/{library}.stderr",
+        stderr2="log/map/{library}.sort.stderr"
+    threads: 8
+    params:
+        ref=config['reference_file_for_mapper'],
+        mapper=config['mapper']
+    conda:
+        "SingleCellMultiOmics"
+    resources:
+        runtime="30h",
+        mem_mb=lambda wildcards, attempt: 20000 + attempt * 8000,
+        slurm_partition="longq",
+        qos="longq"
+    shell:
+        """
+        if [ "{params.mapper}" = "bwa" ]; then
+            bwa mem -t {threads} {params.ref} {input.r1} {input.r2} 2> {log.stderr} | samtools view -bS - > processed/{wildcards.library}/unsorted.bam
+            samtools sort -T processed/{wildcards.library}/temp_sort -@ {threads} processed/{wildcards.library}/unsorted.bam > processed/{wildcards.library}/sorted.unfinished.bam 2> {log.stderr2}
+            mv processed/{wildcards.library}/sorted.unfinished.bam {output.bam}
+            rm processed/{wildcards.library}/unsorted.bam
+            samtools index {output.bam} > {log.stdout}
+        elif [ "{params.mapper}" = "bowtie2" ]; then
+            bowtie2 -p {threads} -q --no-unal --local --sensitive-local -N 1 -x {params.ref} -1 {input.r1} -2 {input.r2} 2> {log.stderr} > {log.stdout} | samtools view -Sb > processed/{wildcards.library}/unsorted.bam
+            samtools sort -T processed/{wildcards.library}/temp_sort -@ {threads} processed/{wildcards.library}/unsorted.bam > processed/{wildcards.library}/sorted.unfinished.bam 2> {log.stderr2}
+            mv processed/{wildcards.library}/sorted.unfinished.bam {output.bam}
+            rm processed/{wildcards.library}/unsorted.bam
+            samtools index {output.bam}
+        else
+            echo "Unknown mapper: {params.mapper}" >&2
+            exit 1
+        fi
+        """
+
+
+rule SCMO_tagmultiome_NLA_parallel_scatter:
+    input:
+        bam = "processed/{library}/sorted.bam",
+        bam_index = "processed/{library}/sorted.bam.bai",
+        mapfile = config['mapfile']
+    output:
+        bam = temp("processed/{library}/TEMP_CONTIG/{contig}.bam"),
+        bam_index = temp("processed/{library}/TEMP_CONTIG/{contig}.bam.bai")
+    log:
+        stdout="log/tag_scatter/{library}_{contig}.stdout",
+        stderr="log/tag_scatter/{library}_{contig}.stderr"
+    threads: 1
+    params:
+        alleles = config['alleles'],
+        allele_samples = config['allele_samples']
+    conda:
+        "SingleCellMultiOmics"
+    resources:
+        runtime="20h",
+        mem_mb=lambda wildcards, attempt: attempt * 10000,
+        slurm_partition="shortq",
+        qos="shortq"
+    shell:
+        "bamtagmultiome.py -method nla -allele_samples {params.allele_samples} -alleles {params.alleles} -mapfile {input.mapfile} -contig {wildcards.contig} {input.bam} -o {output.bam} > {log.stdout} 2> {log.stderr}"
+
+
+rule SCMO_tagmultiome_NLA_parallel_gather:
+    input:
+        chr_bams = expand("processed/{{library}}/TEMP_CONTIG/{contig}.bam", contig=contigs),
+        chr_bams_indices = expand("processed/{{library}}/TEMP_CONTIG/{contig}.bam.bai", contig=contigs)
+    output:
+        bam = "processed/{library}/tagged.bam",
+        bam_index = "processed/{library}/tagged.bam.bai"
+    log:
+        stdout="log/tag_gather/{library}.stdout",
+        stderr="log/tag_gather/{library}.stderr"
+    threads: 1
+    message:
+        'Merging contig BAM files'
+    conda:
+        "SingleCellMultiOmics"
+    resources:
+        runtime="8h",
+        slurm_partition="shortq",
+        qos="shortq"
+    shell:
+        "samtools merge -c {output.bam} {input.chr_bams} > {log.stdout} 2> {log.stderr}; samtools index {output.bam}"
+
+
+rule SCMO_library_stats:
+    input:
+        bam = "processed/{library}/tagged.bam",
+        r1="processed/{library}/demultiplexedR1.fastq.gz",
+        r2="processed/{library}/demultiplexedR2.fastq.gz",
+        r1_rejects="processed/{library}/rejectsR1.fastq.gz",
+        r2_rejects="processed/{library}/rejectsR2.fastq.gz",
+        reference_file=config['reference_file']
+    output:
+        "processed/{library}/plots/ReadCount.png"
+    log:
+        stdout="log/library_stats/{library}.stdout",
+        stderr="log/library_stats/{library}.stderr"
+    threads: 1
+    conda:
+        "SingleCellMultiOmics"
+    resources:
+        runtime="30h",
+        slurm_partition="mediumq",
+        qos="mediumq"
+    shell:
+        "libraryStatistics.py processed/{wildcards.library} -tagged_bam /tagged.bam > {log.stdout} 2> {log.stderr}"
+
+
+rule SCMO_CN:
+    input:
+        bam = "processed/{library}/tagged.bam",
+        reference_file = config['reference_file']
+    output:
+        rawmatplot = "processed/{library}/raw_cn_{counting_bin_size}bp.png",
+        rawmat = "processed/{library}/raw_cn_{counting_bin_size}bp.pickle.gz",
+        gcmatplot = "processed/{library}/gc_corrected_cn_{counting_bin_size}bp.png",
+        gcmat = "processed/{library}/gc_corrected_cn_{counting_bin_size}bp.pickle.gz",
+        histplot = "processed/{library}/cell_histogram_{counting_bin_size}.png",
+    params:
+        molecule_threshold=config['molecule_threshold'],
+        counting_min_mq = config['counting_min_mq']
+    log:
+        stdout="log/cn_table/{library}_{counting_bin_size}.stdout",
+        stderr="log/cn_table/{library}_{counting_bin_size}.stderr"
+    conda:
+        "SingleCellMultiOmics"
+    resources:
+        runtime="50h",
+        slurm_partition="longq",
+        qos="longq"
+    shell:
+        "bamCopyNumber.py -ref {input.reference_file}  \
+        -bin_size {wildcards.counting_bin_size} \
+        -threads 16 \
+        -min_mq {params.counting_min_mq} \
+        -molecule_threshold {params.molecule_threshold} \
+        -bins_per_job 5 \
+        -rawmatplot {output.rawmatplot} \
+        -gcmatplot {output.gcmatplot} \
+        -gcmat {output.gcmat} \
+        -rawmat {output.rawmat} \
+        -histplot {output.histplot}"
+
+
+rule SCMO_count_table:
+    input:
+        bam = "processed/{library}/tagged.bam"
+    output:
+        "processed/{library}/count_table_{counting_bin_size}_{counting_sliding_window_increment}.csv"
+    threads: 1
+    params:
+        counting_min_mq = config['counting_min_mq']
+    log:
+        stdout="log/count_table/{library}_{counting_bin_size}_{counting_sliding_window_increment}.stdout",
+        stderr="log/count_table/{library}_{counting_bin_size}_{counting_sliding_window_increment}.stderr"
+    conda:
+        "SingleCellMultiOmics"
+    resources:
+        runtime="50h",
+        mem_mb=lambda wildcards, attempt: attempt * 8000,
+        slurm_partition="longq",
+        qos="longq"
+    shell:
+        "bamToCountTable.py -bin {wildcards.counting_bin_size} \
+        -sliding {wildcards.counting_sliding_window_increment} \
+        -minMQ {params.counting_min_mq} \
+        --noNames \
+        {input.bam} -sampleTags SM -joinedFeatureTags reference_name -binTag DS -o {output} --dedup > {log.stdout} 2> {log.stderr}"
