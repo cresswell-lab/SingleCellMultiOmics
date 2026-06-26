@@ -98,8 +98,8 @@ rule Trim:
     resources:
         runtime="30h",
         mem_mb=lambda wildcards, attempt: attempt * 4000,
-        slurm_partition="shortq",
-        qos="shortq"
+        slurm_partition="mediumq",
+        qos="mediumq"
     shell:
         'cutadapt -o {output.r1} -p {output.r2} \
         {input.r1} {input.r2} \
@@ -124,20 +124,22 @@ rule map:
         stdout="log/map/{library}.stdout",
         stderr="log/map/{library}.stderr",
         stderr2="log/map/{library}.sort.stderr"
-    threads: 8
+    threads: 32
     params:
         ref=config['reference_file_for_mapper'],
         mapper=config['mapper']
     conda:
         "SingleCellMultiOmics"
     resources:
-        runtime="30h",
+        runtime="12h",
         mem_mb=lambda wildcards, attempt: 20000 + attempt * 8000,
-        slurm_partition="longq",
-        qos="longq"
+        slurm_partition="shortq",
+        qos="shortq"
     shell:
         """
         if [ "{params.mapper}" = "bwa" ]; then
+            module load BWA/0.7.17-GCCcore-11.3.0
+            module load SAMtools/1.18-GCC-12.3.0
             bwa mem -t {threads} {params.ref} {input.r1} {input.r2} 2> {log.stderr} | samtools view -bS - > processed/{wildcards.library}/unsorted.bam
             samtools sort -T processed/{wildcards.library}/temp_sort -@ {threads} processed/{wildcards.library}/unsorted.bam > processed/{wildcards.library}/sorted.unfinished.bam 2> {log.stderr2}
             mv processed/{wildcards.library}/sorted.unfinished.bam {output.bam}
@@ -174,7 +176,7 @@ rule SCMO_tagmultiome_NLA_parallel_scatter:
     conda:
         "SingleCellMultiOmics"
     resources:
-        runtime="20h",
+        runtime="12h",
         mem_mb=lambda wildcards, attempt: attempt * 10000,
         slurm_partition="shortq",
         qos="shortq"
@@ -198,11 +200,14 @@ rule SCMO_tagmultiome_NLA_parallel_gather:
     conda:
         "SingleCellMultiOmics"
     resources:
-        runtime="8h",
+        runtime="12h",
         slurm_partition="shortq",
         qos="shortq"
     shell:
-        "samtools merge -c {output.bam} {input.chr_bams} > {log.stdout} 2> {log.stderr}; samtools index {output.bam}"
+        """
+        module load SAMtools/1.18-GCC-12.3.0
+        samtools merge -c {output.bam} {input.chr_bams} > {log.stdout} 2> {log.stderr}; samtools index {output.bam}
+        """
 
 
 rule SCMO_library_stats:
