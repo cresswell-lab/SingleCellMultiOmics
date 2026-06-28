@@ -176,10 +176,10 @@ rule SCMO_tagmultiome_NLA_parallel_scatter:
     conda:
         "SingleCellMultiOmics"
     resources:
-        runtime="12h",
-        mem_mb=lambda wildcards, attempt: attempt * 10000,
-        slurm_partition="shortq",
-        qos="shortq"
+        runtime="48h",
+        mem_mb=lambda wildcards, attempt: attempt * 24000,
+        slurm_partition="longq",
+        qos="longq"
     shell:
         "bamtagmultiome.py -method nla -allele_samples {params.allele_samples} -alleles {params.alleles} -mapfile {input.mapfile} -contig {wildcards.contig} {input.bam} -o {output.bam} > {log.stdout} 2> {log.stderr}"
 
@@ -194,19 +194,20 @@ rule SCMO_tagmultiome_NLA_parallel_gather:
     log:
         stdout="log/tag_gather/{library}.stdout",
         stderr="log/tag_gather/{library}.stderr"
-    threads: 1
+    threads: 16 
     message:
         'Merging contig BAM files'
     conda:
         "SingleCellMultiOmics"
     resources:
         runtime="12h",
+        mem_mb=lambda wildcards, attempt: attempt * 16000,
         slurm_partition="shortq",
         qos="shortq"
     shell:
         """
         module load SAMtools/1.18-GCC-12.3.0
-        samtools merge -c {output.bam} {input.chr_bams} > {log.stdout} 2> {log.stderr}; samtools index {output.bam}
+        samtools merge -c {output.bam} --threads {threads} {input.chr_bams} > {log.stdout} 2> {log.stderr}; samtools index {output.bam}
         """
 
 
@@ -229,7 +230,8 @@ rule SCMO_library_stats:
     resources:
         runtime="30h",
         slurm_partition="mediumq",
-        qos="mediumq"
+        qos="mediumq",
+        mem_mb=lambda wildcards, attempt: attempt * 16000
     shell:
         "libraryStatistics.py processed/{wildcards.library} -tagged_bam /tagged.bam > {log.stdout} 2> {log.stderr}"
 
